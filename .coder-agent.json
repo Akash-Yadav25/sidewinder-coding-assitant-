@@ -1,0 +1,26 @@
+{
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-20250514",
+  "approval_mode": "destructive",
+  "max_tokens": 8192,
+  "max_iterations": 40,
+  "project_dir": ".",
+  "exclude_patterns": [
+    "node_modules",
+    ".git",
+    "dist",
+    "build",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    "*.pyc",
+    "*.pyo",
+    ".DS_Store"
+  ],
+  "max_file_size": 102400,
+  "max_context_files": 50,
+  "log_level": "info"
+}

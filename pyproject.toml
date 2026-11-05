@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coder-agent"
+version = "1.0.0"
+description = "Lightweight, production-ready AI Coding Agent CLI supporting Anthropic, Bedrock, Azure OpenAI, and Local LLMs"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Coding Agent Contributors" }]
+dependencies = [
+    "anthropic>=0.39.0",
+    "openai>=1.50.0",
+    "boto3>=1.35.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-mock>=3.14.0",
+]
+
+[project.scripts]
+coder-agent = "coder_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["coder_agent*"]
