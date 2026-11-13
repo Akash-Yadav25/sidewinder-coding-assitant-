@@ -170,3 +170,87 @@ class TestRunCommand:
         result = tool_registry.execute(call)
         assert result.is_error
         assert "Security violation" in result.content
+
+
+class TestRunLinter:
+    def test_linter_execution(self, tool_registry: ToolRegistry):
+        call = ToolCall(id="1", name="run_linter", input={})
+        result = tool_registry.execute(call)
+        # Should execute without throwing unexpected exceptions
+        assert isinstance(result.content, str)
+        assert not result.is_error or "Issues found" in result.content
+
+    def test_linter_with_path(self, tool_registry: ToolRegistry):
+        call = ToolCall(id="2", name="run_linter", input={"path": "utils"})
+        result = tool_registry.execute(call)
+        assert isinstance(result.content, str)
+
+
+class TestVerifyOutput:
+    def test_verify_output_success(self, tool_registry: ToolRegistry):
+        call = ToolCall(
+            id="1",
+            name="verify_output",
+            input={
+                "command": "python3 -c \"print('The answer is 42')\"",
+                "expected_output_contains": "42",
+                "expected_exit_code": 0,
+            },
+        )
+        result = tool_registry.execute(call)
+        assert not result.is_error
+        assert "PASS" in result.content
+
+    def test_verify_output_failure_content(self, tool_registry: ToolRegistry):
+        call = ToolCall(
+            id="2",
+            name="verify_output",
+            input={
+                "command": "python3 -c \"print('Hello World')\"",
+                "expected_output_contains": "Goodbye",
+            },
+        )
+        result = tool_registry.execute(call)
+        assert result.is_error
+        assert "FAIL" in result.content
+        assert "Expected output to contain" in result.content
+
+    def test_verify_output_failure_exit_code(self, tool_registry: ToolRegistry):
+        call = ToolCall(
+            id="3",
+            name="verify_output",
+            input={
+                "command": "python3 -c \"import sys; sys.exit(2)\"",
+                "expected_exit_code": 0,
+            },
+        )
+        result = tool_registry.execute(call)
+        assert result.is_error
+        assert "FAIL" in result.content
+
+    def test_verify_output_missing_command(self, tool_registry: ToolRegistry):
+        call = ToolCall(id="4", name="verify_output", input={})
+        result = tool_registry.execute(call)
+        assert result.is_error
+        assert "command' is required" in result.content
+
+    def test_verify_output_dangerous_command_blocked(self, tool_registry: ToolRegistry):
+        call = ToolCall(
+            id="5",
+            name="verify_output",
+            input={"command": "rm -rf /"},
+        )
+        result = tool_registry.execute(call)
+        assert result.is_error
+        assert "Security violation" in result.content
+
+    def test_verify_output_approval_denied(self, tool_registry: ToolRegistry, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(tool_registry.safety, "approve_command", lambda cmd, ui: False)
+        call = ToolCall(
+            id="6",
+            name="verify_output",
+            input={"command": "echo test"},
+        )
+        result = tool_registry.execute(call)
+        assert result.is_error
+        assert "User denied permission" in result.content

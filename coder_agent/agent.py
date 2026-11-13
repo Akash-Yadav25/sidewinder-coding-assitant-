@@ -6,13 +6,21 @@ import ast
 import concurrent.futures
 import logging
 from pathlib import Path
+import re
 from typing import TYPE_CHECKING, Any
 
 from coder_agent.compactor import compact_history
 from coder_agent.git import GitManager
 from coder_agent.providers.cost import calculate_cost
 from coder_agent.storage.db import SessionStore
-from coder_agent.types import AgentResult, Message, ToolCall, ToolResult
+from coder_agent.types import (
+    AgentPhase,
+    AgentResult,
+    Message,
+    ToolCall,
+    ToolResult,
+    ValidationCheck,
+)
 
 if TYPE_CHECKING:
     from coder_agent.config import Config
@@ -22,6 +30,74 @@ if TYPE_CHECKING:
     from coder_agent.safety import SafetyGuard
     from coder_agent.tools import ToolRegistry
     from coder_agent.ui import UI
+
+
+_PLAN_INJECTION = """\
+╔══════════════════════════════════════════════════════╗
+║  PHASE: PLAN                                         ║
+╚══════════════════════════════════════════════════════╝
+Before making any changes, analyze the task and produce a structured plan.
+Use read_file, list_directory, search_code freely to explore the codebase.
+Output your plan in this format:
+
+<plan>
+UNDERSTANDING: [what exactly is being asked]
+ROOT_CAUSE: [what is broken or missing and why]
+APPROACH: [high-level strategy]
+STEPS:
+  1. [specific action]
+  2. [specific action]
+VALIDATION_STRATEGY: [how you will verify BEHAVIORAL correctness, beyond just tests]
+RISK_AREAS: [what could go wrong]
+</plan>
+
+State your plan clearly before proceeding.
+"""
+
+_ACT_INJECTION = """\
+╔══════════════════════════════════════════════════════╗
+║  PHASE: ACT                                          ║
+╚══════════════════════════════════════════════════════╝
+Execute your plan. Make all necessary code changes using edit_file / write_file.
+You may run quick sanity checks (run_command, run_tests) during implementation
+if it helps you, but comprehensive validation will occur in the next phase.
+When done with all changes, summarize what was modified.
+"""
+
+_VALIDATE_INJECTION = """\
+╔══════════════════════════════════════════════════════╗
+║  PHASE: VALIDATE                                     ║
+╚══════════════════════════════════════════════════════╝
+Thoroughly validate your changes. Do NOT modify any files in this phase.
+Run these checks in order and report each as PASS or FAIL:
+
+1. TESTS: run_tests or run_command -> all pass?
+2. STATIC ANALYSIS: run_linter (if applicable) -> any errors?
+3. BEHAVIORAL: use verify_output or run_command to run the program with real inputs.
+   Confirm the ACTUAL OUTPUT matches expected behavior.
+   Do NOT just rely on unit tests passing — verify behavioral correctness!
+4. REGRESSION: Ensure unrelated functionality is not broken.
+
+Format your validation report clearly:
+  [PASS] Tests: all passed
+  [FAIL] Behavioral: expected '42' but got 'None'
+  ...
+
+If all critical checks pass, conclude with "VALIDATION COMPLETE — ALL CHECKS PASSED".
+If any fail, conclude with "VALIDATION FAILED" and specify the exact failure details.
+"""
+
+_DIAGNOSE_INJECTION = """\
+╔══════════════════════════════════════════════════════╗
+║  PHASE: DIAGNOSE -> REPLAN                           ║
+╚══════════════════════════════════════════════════════╝
+One or more validation checks FAILED. Do not give up — analyze and replan.
+
+1. DIAGNOSIS: What specifically went wrong? Why did the previous approach fail?
+2. ROOT CAUSE UPDATE: Was the original root cause analysis accurate?
+3. REVISED PLAN: Produce an updated <plan>...</plan> with the corrected approach.
+4. Then proceed directly to making the fixes.
+"""
 
 
 class Agent:
@@ -54,6 +130,8 @@ class Agent:
             provider=provider_name, model=model_name
         )
         self.messages: list[dict[str, Any]] = []
+        self._last_phase_history: list[str] = []
+        self._last_plan_text: str = ""
 
     def _build_system_prompt(self, project_context: str) -> str:
         return f"""You are a senior AI software engineer and autonomous coding agent CLI.
@@ -75,6 +153,8 @@ Your goal is to inspect codebases, implement precise modifications, run builds a
 - `run_command`: Run tests, linters, package builds, or scripts.
 - `run_tests`: Run targeted tests with framework auto-detection and concise failure diagnostics.
 - `git_diff`: View git diff of modified files to verify your changes or inspect repository state.
+- `run_linter`: Auto-detect and run mypy/ruff/flake8/eslint/cargo clippy for static analysis.
+- `verify_output`: Run a command and assert it produces expected output. Use to verify BEHAVIORAL correctness.
 
 {project_context}
 """
@@ -86,8 +166,15 @@ Your goal is to inspect codebases, implement precise modifications, run builds a
         name = tool_call.name
         inputs = tool_call.input or {}
 
-        if name in ("run_command", "run_tests"):
-            cmd_str = inputs.get("command", "") if name == "run_command" else f"run_tests {inputs.get('targets', '')}"
+        if name in ("run_command", "run_tests", "verify_output", "run_linter"):
+            if name == "run_command":
+                cmd_str = inputs.get("command", "")
+            elif name == "verify_output":
+                cmd_str = f"verify_output: {inputs.get('command', '')}"
+            elif name == "run_linter":
+                cmd_str = f"run_linter: {inputs.get('path', '.')}"
+            else:
+                cmd_str = f"run_tests {inputs.get('targets', '')}"
             exit_code = 0
             if "exit code " in tool_result.content:
                 try:
@@ -142,30 +229,112 @@ Your goal is to inspect codebases, implement precise modifications, run builds a
 
         return review_errors
 
-    def run(self, requirement: str) -> AgentResult:
-        """Execute the complete agent lifecycle for a user coding requirement."""
-        result = AgentResult(success=True, summary="")
+    def _truncate_tool_output(self, content: str) -> str:
+        """Truncate overly large tool outputs to prevent context explosion."""
+        limit = getattr(self.config, "max_tool_output_chars", 6000)
+        if len(content) <= limit:
+            return content
+        head = content[: limit // 2]
+        tail = content[-(limit // 4) :]
+        trimmed = len(content) - (limit // 2) - (limit // 4)
+        return f"{head}\n... [{trimmed:,} chars trimmed — output too large] ...\n{tail}"
 
-        # 0. Create pre-task checkpoint for instant rollback / recovery
-        checkpoint_id = self.git.create_checkpoint(description=f"pre-task: {requirement[:40]}")
-        result.checkpoint_id = checkpoint_id
+    def _estimate_complexity(self, requirement: str) -> str:
+        """Estimate task complexity based on word count and domain keywords."""
+        words = len(requirement.split())
+        req_lower = requirement.lower()
+        architectural_keywords = {
+            "refactor",
+            "migrate",
+            "redesign",
+            "entire",
+            "all files",
+            "overhaul",
+            "restructure",
+            "architecture",
+            "rewrite",
+        }
+        general_keywords = {
+            "implement",
+            "integrate",
+            "debug",
+            "fix bug",
+            "feature",
+            "add",
+            "replace",
+        }
+        threshold = getattr(self.config, "complexity_threshold_words", 25)
+        if words >= threshold or any(kw in req_lower for kw in architectural_keywords):
+            return "complex"
+        if words >= 12 or any(kw in req_lower for kw in general_keywords):
+            return "medium"
+        return "simple"
 
-        self.ui.info(f"Initializing task with provider: {self.ui.bold(self.provider.name)}")
+    def _should_use_pav(self, requirement: str) -> bool:
+        """Decide whether to engage the Plan->Act->Validate loop."""
+        mode = getattr(self.config, "reasoning_mode", "auto").lower()
+        if mode == "always":
+            return True
+        if mode == "never":
+            return False
+        # auto mode:
+        words = len(requirement.split())
+        threshold = getattr(self.config, "complexity_threshold_words", 25)
+        architectural_keywords = {
+            "refactor", "migrate", "redesign", "entire", "all files",
+            "overhaul", "restructure", "architecture", "rewrite",
+        }
+        has_arch_kw = any(kw in requirement.lower() for kw in architectural_keywords)
+        return words >= threshold or has_arch_kw
 
-        # 1. Analyze and build project context
-        with self.ui.spinner("Analyzing project context..."):
-            project_context = self.context.build(self.config.project_dir)
+    def _show_phase(self, phase: str | AgentPhase, cycle: int) -> None:
+        """Display a phase banner in the terminal."""
+        phase_str = str(phase.value if isinstance(phase, AgentPhase) else phase)
+        cycle_label = f" (retry {cycle})" if cycle > 0 else ""
+        icons = {
+            AgentPhase.PLAN.value: "🗺",
+            AgentPhase.ACT.value: "⚡",
+            AgentPhase.VALIDATE.value: "🔍",
+            AgentPhase.DIAGNOSE.value: "🩺",
+        }
+        icon = icons.get(phase_str, "⟳")
+        self.ui.phase_banner(icon, phase_str, cycle_label)
 
-        system_prompt = self._build_system_prompt(project_context)
+    def _extract_plan_block(self, text: str) -> str:
+        """Extract content between <plan>...</plan> tags, or return summary."""
+        m = re.search(r"<plan>(.*?)</plan>", text, re.DOTALL | re.IGNORECASE)
+        return m.group(1).strip() if m else text.strip()
 
-        # 2. Seed message history
-        self.messages.append({"role": "user", "content": requirement})
+    def _parse_validation_checks(self, text: str) -> list[ValidationCheck]:
+        """Parse [PASS]/[FAIL] markers from LLM validation output."""
+        checks: list[ValidationCheck] = []
+        for line in text.splitlines():
+            m_pass = re.match(r"^.*\[PASS\]\s*(.+?)(?::\s*(.*))?$", line, re.IGNORECASE)
+            m_fail = re.match(r"^.*\[FAIL\]\s*(.+?)(?::\s*(.*))?$", line, re.IGNORECASE)
+            if m_pass:
+                name = m_pass.group(1).strip()
+                out = (m_pass.group(2) or "").strip()
+                checks.append(ValidationCheck(name=name, passed=True, output=out))
+            elif m_fail:
+                name = m_fail.group(1).strip()
+                out = (m_fail.group(2) or "").strip()
+                checks.append(ValidationCheck(name=name, passed=False, output=out))
+
+        if not checks:
+            upper = text.upper()
+            all_passed = ("ALL CHECKS PASSED" in upper or "VALIDATION COMPLETE" in upper) and ("FAIL" not in upper)
+            checks.append(ValidationCheck(name="validation_overall", passed=all_passed, output=text[:200]))
+
+        return checks
+
+    def _persist_message(self, **kwargs) -> None:
         try:
-            self.storage.save_message(self.session_id, role="user", content=requirement)
+            self.storage.save_message(self.session_id, **kwargs)
         except Exception as e:
-            self.logger.debug("Failed to persist user message: %s", e)
-        self.logger.info("Starting agent loop for requirement: %s", requirement)
+            self.logger.debug("Failed to persist message: %s", e)
 
+    def _run_inner_loop(self, result: AgentResult, system_prompt: str) -> AgentResult:
+        """Core execution loop for a single phase or single requirement."""
         iteration = 0
         while iteration < self.config.max_iterations:
             iteration += 1
@@ -176,7 +345,7 @@ Your goal is to inspect codebases, implement precise modifications, run builds a
             token_budget = max(20000, self.config.max_tokens * 3)
             self.messages = compact_history(self.messages, token_budget=token_budget)
 
-            # 3. Stream or request response from LLM
+            # Stream or request response from LLM
             stream_gen = self.provider.stream_message(
                 system=system_prompt,
                 messages=self.messages,
@@ -206,21 +375,17 @@ Your goal is to inspect codebases, implement precise modifications, run builds a
                 break
 
             if final_message is None:
-                # If stream didn't yield final Message directly, construct from chunks
                 final_message = Message(
                     role="assistant",
                     content="".join(assistant_text_chunks),
                     stop_reason="end_turn",
                 )
 
-            # Ensure newline after streamed tokens
             if assistant_text_chunks:
                 print()
 
-            # Track tokens
             result.total_tokens.add(final_message.usage)
 
-            # Record assistant turn in conversation history
             self.messages.append(
                 {
                     "role": "assistant",
@@ -228,15 +393,11 @@ Your goal is to inspect codebases, implement precise modifications, run builds a
                     "tool_calls": final_message.tool_calls,
                 }
             )
-            try:
-                self.storage.save_message(
-                    self.session_id,
-                    role="assistant",
-                    content=final_message.content,
-                    tool_calls=final_message.tool_calls,
-                )
-            except Exception as e:
-                self.logger.debug("Failed to persist assistant message: %s", e)
+            self._persist_message(
+                role="assistant",
+                content=final_message.content,
+                tool_calls=final_message.tool_calls,
+            )
 
             # Check if LLM finished without calling tools
             if final_message.stop_reason == "end_turn" and not final_message.tool_calls:
@@ -295,6 +456,7 @@ Your goal is to inspect codebases, implement precise modifications, run builds a
                                     content=f"Error executing {tc.name}: {e}",
                                     is_error=True,
                                 )
+                            tool_res.content = self._truncate_tool_output(tool_res.content)
                             tool_results.append(tool_res)
                             self._track_tool_side_effects(tc, tool_res, result)
                 else:
@@ -304,7 +466,6 @@ Your goal is to inspect codebases, implement precise modifications, run builds a
                             args_summary = args_summary[:77] + "..."
                         self.ui.info(f"Tool Request: {self.ui.bold(tc.name)}({args_summary})")
 
-                        # Execute tool
                         try:
                             tool_res = self.tools.execute(tc)
                         except KeyboardInterrupt:
@@ -316,9 +477,8 @@ Your goal is to inspect codebases, implement precise modifications, run builds a
                             )
                             interrupted_tools = True
 
+                        tool_res.content = self._truncate_tool_output(tool_res.content)
                         tool_results.append(tool_res)
-
-                        # Log & track
                         self._track_tool_side_effects(tc, tool_res, result)
 
                         if tool_res.is_error:
@@ -332,30 +492,160 @@ Your goal is to inspect codebases, implement precise modifications, run builds a
                         if interrupted_tools:
                             break
 
-                # Record tool results in conversation history
                 self.messages.append({"role": "tool_results", "results": tool_results})
-                try:
-                    self.storage.save_message(
-                        self.session_id, role="tool_results", results=tool_results
-                    )
-                except Exception as e:
-                    self.logger.debug("Failed to persist tool results: %s", e)
+                self._persist_message(role="tool_results", results=tool_results)
                 if interrupted_tools:
                     result.success = False
                     result.errors.append("Execution interrupted by user (Ctrl+C)")
                     break
 
         else:
-            # Loop ended due to max iterations
             self.logger.warning("Agent reached max iterations without concluding.")
             result.success = False
             result.errors.append(f"Exceeded maximum limit of {self.config.max_iterations} iterations.")
 
-        # Compute cost
+        return result
+
+    def run(self, requirement: str) -> AgentResult:
+        """Execute the complete agent lifecycle for a user coding requirement."""
+        # Reset per-run state so stale data from prior tasks doesn't bleed through
+        self._last_phase_history = []
+        self._last_plan_text = ""
+
+        result = AgentResult(success=True, summary="")
+        result.complexity = self._estimate_complexity(requirement)
+
+        # 0. Create pre-task checkpoint for instant rollback / recovery
+        checkpoint_id = self.git.create_checkpoint(description=f"pre-task: {requirement[:40]}")
+        result.checkpoint_id = checkpoint_id
+
+        self.ui.info(f"Initializing task with provider: {self.ui.bold(self.provider.name)}")
+
+        # 1. Analyze and build project context
+        with self.ui.spinner("Analyzing project context..."):
+            project_context = self.context.build(self.config.project_dir)
+
+        system_prompt = self._build_system_prompt(project_context)
+
+        # Decide mode
+        use_pav = self._should_use_pav(requirement)
+        if use_pav:
+            self.ui.info(f"[Reasoning Loop] Complexity: {result.complexity} -> PAV mode active")
+
+        if not use_pav:
+            # Simple flat mode - direct single-phase loop
+            self.messages.append({"role": "user", "content": requirement})
+            self._persist_message(role="user", content=requirement)
+            self.logger.info("Starting agent loop for requirement: %s", requirement)
+            self._run_inner_loop(result, system_prompt)
+            result.total_cost = calculate_cost(
+                self.config.provider, self.config.model, result.total_tokens
+            )
+            self.ui.summary(result)
+            return result
+
+        # --- PAV MODE ---
+        self.logger.info("Starting PAV agent loop for requirement: %s", requirement)
+
+        # 1. PLAN Phase
+        self._show_phase(AgentPhase.PLAN, 0)
+        result.phase_history.append(AgentPhase.PLAN.value)
+        plan_message = _PLAN_INJECTION + "\n\nTask:\n" + requirement
+        self.messages.append({"role": "user", "content": plan_message})
+        self._persist_message(role="user", content=plan_message)
+
+        plan_res = AgentResult(success=True, summary="")
+        self._run_inner_loop(plan_res, system_prompt)
+        result.total_tokens.add(plan_res.total_tokens)
+        result.plan_text = self._extract_plan_block(plan_res.summary)
+        self._last_plan_text = result.plan_text
+
+        # 2. Cycles of ACT -> VALIDATE -> DIAGNOSE
+        for cycle in range(self.config.max_replan_cycles + 1):
+            if cycle > 0:
+                # DIAGNOSE Phase
+                self._show_phase(AgentPhase.DIAGNOSE, cycle)
+                result.phase_history.append(f"{AgentPhase.DIAGNOSE.value}-{cycle}")
+                failed = [c for c in result.validation_checks if not c.passed]
+                failure_detail = (
+                    "\n".join(f"  - [{c.name}]: {c.output[:300]}" for c in failed)
+                    if failed
+                    else "Validation failed."
+                )
+                diag_msg = _DIAGNOSE_INJECTION + f"\n\nFailed checks:\n{failure_detail}"
+                self.messages.append({"role": "user", "content": diag_msg})
+                self._persist_message(role="user", content=diag_msg)
+
+                diag_res = AgentResult(success=True, summary="")
+                self._run_inner_loop(diag_res, system_prompt)
+                result.total_tokens.add(diag_res.total_tokens)
+                revised = self._extract_plan_block(diag_res.summary)
+                if revised:
+                    result.plan_text = revised
+                    self._last_plan_text = revised
+
+            # ACT Phase
+            self._show_phase(AgentPhase.ACT, cycle)
+            result.phase_history.append(f"{AgentPhase.ACT.value}-{cycle}")
+            act_msg = (
+                _ACT_INJECTION
+                if cycle == 0
+                else _ACT_INJECTION + "\n\n(Proceeding with implementation according to revised plan)"
+            )
+            self.messages.append({"role": "user", "content": act_msg})
+            self._persist_message(role="user", content=act_msg)
+
+            act_res = AgentResult(success=True, summary="")
+            self._run_inner_loop(act_res, system_prompt)
+            result.total_tokens.add(act_res.total_tokens)
+
+            # Merge file side effects and commands
+            for f in act_res.files_modified:
+                if f not in result.files_modified:
+                    result.files_modified.append(f)
+            for f in act_res.files_created:
+                if f not in result.files_created:
+                    result.files_created.append(f)
+            for f in act_res.files_deleted:
+                if f not in result.files_deleted:
+                    result.files_deleted.append(f)
+            result.commands_run.extend(act_res.commands_run)
+            result.errors.extend(act_res.errors)
+            result.summary = act_res.summary
+
+            # VALIDATE Phase
+            self._show_phase(AgentPhase.VALIDATE, cycle)
+            result.phase_history.append(f"{AgentPhase.VALIDATE.value}-{cycle}")
+            self.messages.append({"role": "user", "content": _VALIDATE_INJECTION})
+            self._persist_message(role="user", content=_VALIDATE_INJECTION)
+
+            val_res = AgentResult(success=True, summary="")
+            self._run_inner_loop(val_res, system_prompt)
+            result.total_tokens.add(val_res.total_tokens)
+            result.commands_run.extend(val_res.commands_run)
+
+            checks = self._parse_validation_checks(val_res.summary)
+            result.validation_checks = checks
+
+            critical_checks = [c for c in checks if c.is_critical]
+            all_passed = bool(critical_checks) and all(c.passed for c in critical_checks)
+
+            if all_passed:
+                result.success = True
+                result.replan_count = cycle
+                break
+            elif cycle >= self.config.max_replan_cycles:
+                result.success = False
+                failed_names = [c.name for c in checks if not c.passed]
+                result.errors.append(
+                    f"PAV loop exhausted after {cycle + 1} cycles. Failed checks: {failed_names}"
+                )
+                result.replan_count = cycle
+                break
+
+        self._last_phase_history = list(result.phase_history)
         result.total_cost = calculate_cost(
             self.config.provider, self.config.model, result.total_tokens
         )
-
-        # Present structured summary
         self.ui.summary(result)
         return result

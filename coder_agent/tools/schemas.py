@@ -173,4 +173,61 @@ TOOL_DEFINITIONS: list[ToolDefinition] = [
             },
         },
     ),
+    ToolDefinition(
+        name="run_linter",
+        description=(
+            "Auto-detect and run the project's static analysis tool "
+            "(ruff, mypy, flake8, eslint, go vet, cargo clippy). "
+            "Returns structured errors with file names and line numbers. "
+            "Use during validation to catch type errors, style issues, and bugs "
+            "that tests may not cover."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Subdirectory to lint (default: project root)",
+                },
+                "fix": {
+                    "type": "boolean",
+                    "description": "Apply auto-fixable suggestions where supported (default: false).",
+                },
+            },
+        },
+    ),
+    ToolDefinition(
+        name="verify_output",
+        description=(
+            "Run a shell command and assert its output matches expected behavior. "
+            "Use this to verify BEHAVIORAL correctness — does the program actually "
+            "produce the right output with real inputs? This catches bugs that tests miss."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Shell command to run in the project root",
+                },
+                "expected_output_contains": {
+                    "type": "string",
+                    "description": "Substring that MUST appear in stdout+stderr",
+                },
+                "expected_output_excludes": {
+                    "type": "string",
+                    "description": "Substring that must NOT appear in stdout+stderr",
+                },
+                "expected_exit_code": {
+                    "type": "integer",
+                    "description": "Expected process exit code (default: 0)",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in seconds (default: 30)",
+                },
+            },
+            "required": ["command"],
+        },
+    ),
 ]

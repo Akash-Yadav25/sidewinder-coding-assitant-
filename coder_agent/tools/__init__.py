@@ -12,8 +12,10 @@ from coder_agent.tools import (
     list_directory,
     read_file,
     run_command,
+    run_linter,
     run_tests,
     search_code,
+    verify_output,
     write_file,
 )
 from coder_agent.tools.schemas import TOOL_DEFINITIONS
@@ -44,6 +46,8 @@ class ToolRegistry:
             "run_command": run_command.execute,
             "git_diff": git_diff.execute,
             "run_tests": run_tests.execute,
+            "run_linter": run_linter.execute,
+            "verify_output": verify_output.execute,
         }
 
         # Discover & register MCP tools if configured
