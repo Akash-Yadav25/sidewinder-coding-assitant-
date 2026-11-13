@@ -13,6 +13,7 @@ from coder_agent.interactive import start_interactive
 from coder_agent.logger import setup_logger
 from coder_agent.providers import create_provider
 from coder_agent.safety import SafetyGuard
+from coder_agent.storage.db import SessionStore
 from coder_agent.tools import ToolRegistry
 from coder_agent.ui import UI
 
@@ -43,6 +44,12 @@ Examples:
         "--interactive",
         action="store_true",
         help="Start interactive REPL mode for multi-turn sessions",
+    )
+    parser.add_argument(
+        "--resume",
+        nargs="?",
+        const="latest",
+        help="Resume prior session by session ID or latest (default: latest)",
     )
     parser.add_argument(
         "-p",
@@ -117,6 +124,17 @@ def main(argv: list[str] | None = None) -> int:
         config=config,
     )
 
+    # Resolve resume session if requested
+    storage = SessionStore(config.project_dir)
+    resume_session_id: str | None = None
+    if args.resume:
+        if args.resume == "latest":
+            resume_session_id = storage.get_latest_session_id()
+            if not resume_session_id:
+                ui.warning("No prior session found to resume. Starting new session.")
+        else:
+            resume_session_id = args.resume
+
     # Dispatch to interactive mode or direct execution
     if args.interactive or not args.requirement:
         return start_interactive(
@@ -127,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             safety=safety,
             ui=ui,
             logger=logger,
+            session_id=resume_session_id,
         )
     else:
         agent = Agent(
@@ -137,7 +156,14 @@ def main(argv: list[str] | None = None) -> int:
             config=config,
             ui=ui,
             logger=logger,
+            session_id=resume_session_id,
         )
+        if resume_session_id:
+            prior_msgs = storage.get_session_messages(resume_session_id)
+            if prior_msgs:
+                agent.messages = prior_msgs
+                ui.info(f"Resumed session {resume_session_id} ({len(prior_msgs)} messages loaded)")
+
         result = agent.run(args.requirement)
         return 0 if result.success else 1
 

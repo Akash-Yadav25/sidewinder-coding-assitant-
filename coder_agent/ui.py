@@ -226,6 +226,9 @@ class UI:
         total_tok = result.total_tokens.input_tokens + result.total_tokens.output_tokens
         if total_tok > 0:
             print(f"Tokens Used:     {total_tok:,} (in: {result.total_tokens.input_tokens:,}, out: {result.total_tokens.output_tokens:,})")
+            if result.total_cost > 0:
+                cost_str = f"${result.total_cost:.4f}" if result.total_cost < 0.01 else f"${result.total_cost:.2f}"
+                print(f"Est. Cost:       {self.green(cost_str)}")
 
         if result.errors:
             print(f"\n{self.red('Errors:')}")

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from coder_agent.indexer.repomap import RepoMap
 from coder_agent.tools.list_directory import _is_excluded
 
 if TYPE_CHECKING:
@@ -131,5 +132,13 @@ class ContextBuilder:
         if configs:
             parts.append("## Project Configurations & Testing Instructions:")
             parts.append(configs)
+
+        # Generate token-budgeted architectural RepoMap
+        try:
+            repo_map = RepoMap(root, self.config.exclude_patterns, max_tokens=1500).build_map()
+            if repo_map:
+                parts.append(repo_map)
+        except Exception:
+            pass
 
         return "\n\n".join(parts)

@@ -10,13 +10,15 @@ from botocore.config import Config as BotoConfig
 
 from coder_agent.config import Config
 from coder_agent.providers.base import LLMProvider
+from coder_agent.providers.resilience import RetryConfig, execute_with_retry, stream_with_retry
+from coder_agent.safety_secrets import redact_secrets
 from coder_agent.types import Message, TokenUsage, ToolCall, ToolDefinition
 
 
 class BedrockProvider(LLMProvider):
     """AWS Bedrock integration using the standardized Converse API."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, retry_config: RetryConfig | None = None):
         region = config.aws_region or os.environ.get("AWS_REGION") or "us-east-1"
         boto_kwargs: dict[str, Any] = {
             "service_name": "bedrock-runtime",
@@ -35,6 +37,7 @@ class BedrockProvider(LLMProvider):
         self.client = boto3.client(**boto_kwargs)
         self.model = config.model or "anthropic.claude-sonnet-4-20250514-v1:0"
         self.max_tokens = config.max_tokens
+        self.retry_config = retry_config or RetryConfig()
 
     @property
     def name(self) -> str:
@@ -59,7 +62,7 @@ class BedrockProvider(LLMProvider):
         for m in messages:
             role = m.get("role")
             if role == "user":
-                formatted.append({"role": "user", "content": [{"text": m.get("content", "")}]})
+                formatted.append({"role": "user", "content": [{"text": redact_secrets(m.get("content", ""))}]})
             elif role == "assistant":
                 blocks: list[dict[str, Any]] = []
                 text_content = m.get("content", "")
@@ -85,7 +88,7 @@ class BedrockProvider(LLMProvider):
                         {
                             "toolResult": {
                                 "toolUseId": res.tool_use_id,
-                                "content": [{"text": res.content}],
+                                "content": [{"text": redact_secrets(res.content)}],
                                 "status": "error" if res.is_error else "success",
                             }
                         }
@@ -132,18 +135,21 @@ class BedrockProvider(LLMProvider):
         messages: list[dict[str, Any]],
         tools: list[ToolDefinition],
     ) -> Message:
-        kwargs: dict[str, Any] = {
-            "modelId": self.model,
-            "messages": self._format_messages(messages),
-            "inferenceConfig": {"maxTokens": self.max_tokens},
-        }
-        if system:
-            kwargs["system"] = [{"text": system}]
-        if tools:
-            kwargs["toolConfig"] = self._format_tools(tools)
+        def _call() -> Message:
+            kwargs: dict[str, Any] = {
+                "modelId": self.model,
+                "messages": self._format_messages(messages),
+                "inferenceConfig": {"maxTokens": self.max_tokens},
+            }
+            if system:
+                kwargs["system"] = [{"text": system}]
+            if tools:
+                kwargs["toolConfig"] = self._format_tools(tools)
 
-        response = self.client.converse(**kwargs)
-        return self._parse_response(response)
+            response = self.client.converse(**kwargs)
+            return self._parse_response(response)
+
+        return execute_with_retry(_call, self.retry_config)
 
     def stream_message(
         self,
@@ -151,86 +157,89 @@ class BedrockProvider(LLMProvider):
         messages: list[dict[str, Any]],
         tools: list[ToolDefinition],
     ) -> Generator[str | Message, None, Message]:
-        kwargs: dict[str, Any] = {
-            "modelId": self.model,
-            "messages": self._format_messages(messages),
-            "inferenceConfig": {"maxTokens": self.max_tokens},
-        }
-        if system:
-            kwargs["system"] = [{"text": system}]
-        if tools:
-            kwargs["toolConfig"] = self._format_tools(tools)
+        def _create_stream() -> Generator[str | Message, None, Message]:
+            kwargs: dict[str, Any] = {
+                "modelId": self.model,
+                "messages": self._format_messages(messages),
+                "inferenceConfig": {"maxTokens": self.max_tokens},
+            }
+            if system:
+                kwargs["system"] = [{"text": system}]
+            if tools:
+                kwargs["toolConfig"] = self._format_tools(tools)
 
-        response = self.client.converse_stream(**kwargs)
-        stream = response.get("stream")
+            response = self.client.converse_stream(**kwargs)
+            stream = response.get("stream")
 
-        text_parts: list[str] = []
-        tool_calls: list[ToolCall] = []
-        stop_reason = "end_turn"
-        input_tokens = 0
-        output_tokens = 0
+            text_parts: list[str] = []
+            tool_calls: list[ToolCall] = []
+            stop_reason = "end_turn"
+            input_tokens = 0
+            output_tokens = 0
 
-        current_tool_id = ""
-        current_tool_name = ""
-        current_tool_input_json = ""
+            current_tool_id = ""
+            current_tool_name = ""
+            current_tool_input_json = ""
 
-        if stream:
-            for event in stream:
-                if "contentBlockStart" in event:
-                    start = event["contentBlockStart"].get("start", {})
-                    if "toolUse" in start:
-                        tu = start["toolUse"]
-                        current_tool_id = tu.get("toolUseId", "")
-                        current_tool_name = tu.get("name", "")
-                        current_tool_input_json = ""
-                elif "contentBlockDelta" in event:
-                    delta = event["contentBlockDelta"].get("delta", {})
-                    if "text" in delta:
-                        chunk = delta["text"]
-                        text_parts.append(chunk)
-                        yield chunk
-                    elif "toolUse" in delta:
-                        input_chunk = delta["toolUse"].get("input", "")
-                        current_tool_input_json += input_chunk
-                elif "contentBlockStop" in event:
-                    if current_tool_name:
-                        import json
+            if stream:
+                for event in stream:
+                    if "contentBlockStart" in event:
+                        start = event["contentBlockStart"].get("start", {})
+                        if "toolUse" in start:
+                            tu = start["toolUse"]
+                            current_tool_id = tu.get("toolUseId", "")
+                            current_tool_name = tu.get("name", "")
+                            current_tool_input_json = ""
+                    elif "contentBlockDelta" in event:
+                        delta = event["contentBlockDelta"].get("delta", {})
+                        if "text" in delta:
+                            chunk = delta["text"]
+                            text_parts.append(chunk)
+                            yield chunk
+                        elif "toolUse" in delta:
+                            input_chunk = delta["toolUse"].get("input", "")
+                            current_tool_input_json += input_chunk
+                    elif "contentBlockStop" in event:
+                        if current_tool_name:
+                            import json
 
-                        try:
-                            parsed_input = (
-                                json.loads(current_tool_input_json)
-                                if current_tool_input_json
-                                else {}
+                            try:
+                                parsed_input = (
+                                    json.loads(current_tool_input_json)
+                                    if current_tool_input_json
+                                    else {}
+                                )
+                            except json.JSONDecodeError:
+                                parsed_input = {}
+                            tool_calls.append(
+                                ToolCall(
+                                    id=current_tool_id,
+                                    name=current_tool_name,
+                                    input=parsed_input,
+                                )
                             )
-                        except json.JSONDecodeError:
-                            parsed_input = {}
-                        tool_calls.append(
-                            ToolCall(
-                                id=current_tool_id,
-                                name=current_tool_name,
-                                input=parsed_input,
-                            )
+                            current_tool_name = ""
+                            current_tool_id = ""
+                            current_tool_input_json = ""
+                    elif "messageStop" in event:
+                        stop_reason = (
+                            "tool_use"
+                            if event["messageStop"].get("stopReason") == "tool_use"
+                            else "end_turn"
                         )
-                        current_tool_name = ""
-                        current_tool_id = ""
-                        current_tool_input_json = ""
-                elif "messageStop" in event:
-                    stop_reason = (
-                        "tool_use"
-                        if event["messageStop"].get("stopReason") == "tool_use"
-                        else "end_turn"
-                    )
-                elif "metadata" in event:
-                    usage = event["metadata"].get("usage", {})
-                    input_tokens = usage.get("inputTokens", 0)
-                    output_tokens = usage.get("outputTokens", 0)
+                    elif "metadata" in event:
+                        usage = event["metadata"].get("usage", {})
+                        input_tokens = usage.get("inputTokens", 0)
+                        output_tokens = usage.get("outputTokens", 0)
 
-        final_msg = Message(
-            role="assistant",
-            content="".join(text_parts),
-            tool_calls=tool_calls,
-            stop_reason=stop_reason,
-            usage=TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens),
-        )
-        yield final_msg
-        return final_msg
+            final_msg = Message(
+                role="assistant",
+                content="".join(text_parts),
+                tool_calls=tool_calls,
+                stop_reason=stop_reason,
+                usage=TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens),
+            )
+            yield final_msg
+            return final_msg
+
+        return (yield from stream_with_retry(_create_stream, self.retry_config))

@@ -1,0 +1,211 @@
+"""Slash command router and execution engine for interactive REPL."""
+
+from __future__ import annotations
+
+import sys
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from coder_agent.compactor import compact_history, estimate_message_tokens
+from coder_agent.providers import create_provider
+from coder_agent.providers.cost import calculate_cost, format_cost
+
+if TYPE_CHECKING:
+    from coder_agent.agent import Agent
+    from coder_agent.config import Config
+    from coder_agent.types import TokenUsage
+    from coder_agent.ui import UI
+
+
+@dataclass
+class CommandResult:
+    """Outcome of slash command dispatch."""
+
+    handled: bool
+    should_exit: bool = False
+    new_checkpoint_id: str | None = None
+
+
+class SlashCommandHandler:
+    """Manages parsing, dispatching, and executing CLI slash commands."""
+
+    def __init__(self, agent: Agent, ui: UI, config: Config):
+        self.agent = agent
+        self.ui = ui
+        self.config = config
+
+    def print_help(self) -> None:
+        """Display formatted guidance for available slash commands."""
+        print(f"\n{self.ui.bold('Available Slash Commands:')}")
+        print(f"  {self.ui.cyan('/diff')}             - View git diff of changes made in this session")
+        print(f"  {self.ui.cyan('/undo')}             - Rollback workspace to the pre-task git checkpoint")
+        print(f"  {self.ui.cyan('/commit [msg]')}     - Commit staged/unstaged changes to git")
+        print(f"  {self.ui.cyan('/compact')}          - Compact conversation history to optimize token budget")
+        print(f"  {self.ui.cyan('/cost')}             - Display cumulative session tokens and estimated USD cost")
+        print(f"  {self.ui.cyan('/model [name]')}     - Display or switch active LLM provider and model")
+        print(f"  {self.ui.cyan('/history')}          - Display recent conversation turns")
+        print(f"  {self.ui.cyan('/reset')}            - Clear active conversation history while keeping session alive")
+        print(f"  {self.ui.cyan('/config')}           - Display active configuration")
+        print(f"  {self.ui.cyan('/clear')}            - Clear the terminal screen")
+        print(f"  {self.ui.cyan('/help')}             - Show this help guidance")
+        print(f"  {self.ui.cyan('/exit')} or {self.ui.cyan('/quit')}   - Terminate the interactive session")
+        print(f"\nOr type any natural-language coding task to execute.\n")
+
+    def handle(
+        self,
+        user_input: str,
+        cumulative_tokens: TokenUsage,
+        last_checkpoint_id: str | None,
+    ) -> CommandResult:
+        """Route and execute slash command. Returns CommandResult."""
+        raw_cmd = user_input.split()[0].lower()
+        args = user_input[len(raw_cmd) :].strip()
+
+        # 1. Exit
+        if raw_cmd in ("/exit", "/quit", "exit", "quit", "q"):
+            print("Goodbye.")
+            return CommandResult(handled=True, should_exit=True)
+
+        # 2. Help
+        if raw_cmd in ("/help", "help"):
+            self.print_help()
+            return CommandResult(handled=True)
+
+        # 3. Clear Screen
+        if raw_cmd in ("/clear", "clear"):
+            sys.stdout.write("\033[2J\033[H")
+            sys.stdout.flush()
+            return CommandResult(handled=True)
+
+        # 4. Configuration
+        if raw_cmd in ("/config", "config"):
+            print(f"\n{self.ui.bold('Active Configuration:')}")
+            print(f"  Provider:         {self.config.provider}")
+            print(f"  Model:            {self.config.model}")
+            print(f"  Project Root:     {self.config.project_dir}")
+            print(f"  Approval Mode:    {self.config.approval_mode}")
+            print(f"  Max Iterations:   {self.config.max_iterations}")
+            print(f"  Max Tokens:       {self.config.max_tokens}\n")
+            return CommandResult(handled=True)
+
+        # 5. Git Diff
+        if raw_cmd == "/diff":
+            diff_text = self.agent.git.get_diff()
+            if diff_text.strip():
+                print(f"\n{self.ui.bold('--- Uncommitted Changes ---')}")
+                print(diff_text)
+                print(f"{self.ui.bold('---------------------------')}\n")
+            else:
+                self.ui.info("Working directory is clean. No uncommitted changes.")
+            return CommandResult(handled=True)
+
+        # 6. Undo / Rollback
+        if raw_cmd == "/undo":
+            if not last_checkpoint_id:
+                self.ui.warning("No checkpoint available to undo.")
+                return CommandResult(handled=True)
+            self.ui.info(f"Reverting workspace to checkpoint {self.ui.bold(last_checkpoint_id)}...")
+            if self.agent.git.restore_checkpoint(last_checkpoint_id):
+                self.ui.success("Workspace successfully restored to pre-task state.")
+            else:
+                self.ui.error("Failed to restore workspace from checkpoint.")
+            return CommandResult(handled=True)
+
+        # 7. Safe Git Commit
+        if raw_cmd == "/commit":
+            commit_msg = args if args else "Updates from Coder Agent session"
+            if self.agent.git.commit(commit_msg):
+                self.ui.success(f"Changes committed successfully: {commit_msg}")
+            else:
+                self.ui.error("Failed to commit changes. Check git status.")
+            return CommandResult(handled=True)
+
+        # 8. Compact History
+        if raw_cmd == "/compact":
+            before = estimate_message_tokens(self.agent.messages)
+            self.agent.messages = compact_history(self.agent.messages, token_budget=0, keep_recent_count=2)
+            after = estimate_message_tokens(self.agent.messages)
+            self.ui.success(f"History compacted from {before:,} to {after:,} estimated tokens.")
+            return CommandResult(handled=True)
+
+        # 9. Cost Analytics
+        if raw_cmd == "/cost":
+            tot = cumulative_tokens.input_tokens + cumulative_tokens.output_tokens
+            cost = calculate_cost(self.config.provider, self.config.model, cumulative_tokens)
+            print(f"\n{self.ui.bold('Session Token & Cost Analytics:')}")
+            print(f"  Total Tokens:   {tot:,} (in: {cumulative_tokens.input_tokens:,}, out: {cumulative_tokens.output_tokens:,})")
+            print(f"  Est. Cost:      {self.ui.green(format_cost(cost))}\n")
+            return CommandResult(handled=True)
+
+        # 10. Switch or Inspect Model
+        if raw_cmd == "/model":
+            if not args:
+                print(f"\n{self.ui.bold('Active Model Settings:')}")
+                print(f"  Provider: {self.ui.green(self.config.provider)}")
+                print(f"  Model:    {self.ui.green(self.config.model)}")
+                print(f"\n{self.ui.bold('Recommended Models:')}")
+                print(f"  anthropic : claude-3-5-sonnet-20241022, claude-3-5-haiku-20241022")
+                print(f"  bedrock   : anthropic.claude-3-5-sonnet-20241022-v2:0")
+                print(f"  azure     : gpt-4o, gpt-4o-mini")
+                print(f"  ollama    : llama3.2, deepseek-coder:6.7b")
+                print(f"\nUsage: {self.ui.cyan('/model <model_name>')} or {self.ui.cyan('/model <provider>:<model_name>')}\n")
+                return CommandResult(handled=True)
+
+            target_provider = self.config.provider
+            target_model = args.strip()
+            if ":" in target_model:
+                parts = target_model.split(":", 1)
+                target_provider = parts[0].strip()
+                target_model = parts[1].strip()
+
+            try:
+                self.config.provider = target_provider
+                self.config.model = target_model
+                new_provider = create_provider(self.config)
+                self.agent.provider = new_provider
+                self.ui.success(f"Switched to provider '{target_provider}' with model '{target_model}'.")
+            except Exception as e:
+                self.ui.error(f"Failed to switch model: {e}")
+            return CommandResult(handled=True)
+
+        # 11. Conversation History
+        if raw_cmd == "/history":
+            if not self.agent.messages:
+                self.ui.info("No conversation history in current session.")
+                return CommandResult(handled=True)
+
+            print(f"\n{self.ui.bold(f'Recent Conversation History ({len(self.agent.messages)} entries):')}")
+            recent = self.agent.messages[-10:]
+            for idx, msg in enumerate(recent, 1):
+                role = msg.get("role", "unknown")
+                if role == "user":
+                    preview = msg.get("content", "")
+                    if len(preview) > 75:
+                        preview = preview[:72] + "..."
+                    print(f"  {idx}. {self.ui.cyan('[User]')}: {preview}")
+                elif role == "assistant":
+                    content = msg.get("content", "")
+                    tc = msg.get("tool_calls", [])
+                    tc_desc = f" ({len(tc)} tool calls)" if tc else ""
+                    preview = content.splitlines()[0] if content else "(tool call)"
+                    if len(preview) > 65:
+                        preview = preview[:62] + "..."
+                    print(f"  {idx}. {self.ui.green('[Assistant]')}{tc_desc}: {preview}")
+                elif role == "tool_results":
+                    results = msg.get("results", [])
+                    print(f"  {idx}. {self.ui.dim('[Tool Results]')}: {len(results)} outputs returned")
+            print()
+            return CommandResult(handled=True)
+
+        # 12. Reset Session
+        if raw_cmd == "/reset":
+            self.agent.messages.clear()
+            self.ui.success("Active conversation history cleared. Ready for fresh task.")
+            return CommandResult(handled=True)
+
+        # Unhandled command
+        if raw_cmd.startswith("/"):
+            self.ui.warning(f"Unknown command: '{raw_cmd}'. Type {self.ui.cyan('/help')} for available commands.")
+            return CommandResult(handled=True)
+
+        return CommandResult(handled=False)

@@ -33,6 +33,35 @@ class TestSafetyGuard:
         with pytest.raises(ValueError, match="Security violation"):
             guard.validate_path("/tmp/outside.txt")
 
+    def test_path_validation_rejects_symlink_traversal(self, tmp_path: Path):
+        cfg = Config(project_dir=str(tmp_path), approval_mode="never")
+        guard = SafetyGuard(cfg)
+
+        outside_target = tmp_path.parent / "outside_target.txt"
+        outside_target.write_text("secret outside", encoding="utf-8")
+
+        symlink_file = tmp_path / "sneaky_symlink.txt"
+        symlink_file.symlink_to(outside_target)
+
+        with pytest.raises(ValueError, match="Security violation.*outside project root"):
+            guard.validate_path("sneaky_symlink.txt")
+
+    def test_secret_redaction(self, tmp_path: Path):
+        cfg = Config(project_dir=str(tmp_path), approval_mode="never")
+        guard = SafetyGuard(cfg)
+
+        leaked_prompt = (
+            "My Anthropic key is sk-ant-api03-abcdef1234567890abcdef1234567890-test and "
+            "AWS is AKIAIOSFODNN7EXAMPLE with token ghp_123456789012345678901234567890123456"
+        )
+        cleaned = guard.redact_secrets(leaked_prompt)
+        assert "sk-ant-api03" not in cleaned
+        assert "[REDACTED_ANTHROPIC_KEY]" in cleaned
+        assert "AKIAIOSFODNN7EXAMPLE" not in cleaned
+        assert "[REDACTED_AWS_KEY_ID]" in cleaned
+        assert "ghp_12345" not in cleaned
+        assert "[REDACTED_GITHUB_TOKEN]" in cleaned
+
     @pytest.mark.parametrize(
         "cmd",
         [

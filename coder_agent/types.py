@@ -68,3 +68,5 @@ class AgentResult:
     commands_run: list[dict[str, Any]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     total_tokens: TokenUsage = field(default_factory=TokenUsage)
+    checkpoint_id: str = ""
+    total_cost: float = 0.0

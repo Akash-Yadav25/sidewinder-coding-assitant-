@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from coder_agent.safety_secrets import redact_secrets
 
 if TYPE_CHECKING:
     from coder_agent.config import Config
@@ -46,7 +49,21 @@ class SafetyGuard:
                 f"which is outside project root '{base}'"
             )
 
+        # Check canonical realpath to prevent symlink traversal attacks
+        try:
+            canonical = Path(os.path.realpath(resolved))
+            canonical.relative_to(base)
+        except ValueError:
+            raise ValueError(
+                f"Security violation: Symlink target for '{file_path}' resolves to '{canonical}', "
+                f"which is outside project root '{base}'"
+            )
+
         return resolved
+
+    def redact_secrets(self, text: str) -> str:
+        """Scan and redact secrets before external exposure."""
+        return redact_secrets(text)
 
     def validate_command(self, command: str) -> None:
         """Validate shell command against safety blocklist."""
