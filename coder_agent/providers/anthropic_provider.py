@@ -9,13 +9,15 @@ import anthropic
 
 from coder_agent.config import Config
 from coder_agent.providers.base import LLMProvider
+from coder_agent.providers.resilience import RetryConfig, execute_with_retry, stream_with_retry
+from coder_agent.safety_secrets import redact_secrets
 from coder_agent.types import Message, TokenUsage, ToolCall, ToolDefinition
 
 
 class AnthropicProvider(LLMProvider):
     """Direct provider integration with Anthropic Claude API."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, retry_config: RetryConfig | None = None):
         api_key = config.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError(
@@ -25,6 +27,7 @@ class AnthropicProvider(LLMProvider):
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = config.model or "claude-sonnet-4-20250514"
         self.max_tokens = config.max_tokens
+        self.retry_config = retry_config or RetryConfig()
 
     @property
     def name(self) -> str:
@@ -45,7 +48,7 @@ class AnthropicProvider(LLMProvider):
         for m in messages:
             role = m.get("role")
             if role == "user":
-                formatted.append({"role": "user", "content": m.get("content", "")})
+                formatted.append({"role": "user", "content": redact_secrets(m.get("content", ""))})
             elif role == "assistant":
                 blocks = []
                 text_content = m.get("content", "")
@@ -70,7 +73,7 @@ class AnthropicProvider(LLMProvider):
                     item: dict[str, Any] = {
                         "type": "tool_result",
                         "tool_use_id": res.tool_use_id,
-                        "content": res.content,
+                        "content": redact_secrets(res.content),
                     }
                     if res.is_error:
                         item["is_error"] = True
@@ -112,18 +115,21 @@ class AnthropicProvider(LLMProvider):
         messages: list[dict[str, Any]],
         tools: list[ToolDefinition],
     ) -> Message:
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            "max_tokens": self.max_tokens,
-            "messages": self._format_messages(messages),
-        }
-        if system:
-            kwargs["system"] = system
-        if tools:
-            kwargs["tools"] = self._format_tools(tools)
+        def _call() -> Message:
+            kwargs: dict[str, Any] = {
+                "model": self.model,
+                "max_tokens": self.max_tokens,
+                "messages": self._format_messages(messages),
+            }
+            if system:
+                kwargs["system"] = system
+            if tools:
+                kwargs["tools"] = self._format_tools(tools)
 
-        response = self.client.messages.create(**kwargs)
-        return self._parse_response(response)
+            response = self.client.messages.create(**kwargs)
+            return self._parse_response(response)
+
+        return execute_with_retry(_call, self.retry_config)
 
     def stream_message(
         self,
@@ -131,21 +137,24 @@ class AnthropicProvider(LLMProvider):
         messages: list[dict[str, Any]],
         tools: list[ToolDefinition],
     ) -> Generator[str | Message, None, Message]:
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            "max_tokens": self.max_tokens,
-            "messages": self._format_messages(messages),
-        }
-        if system:
-            kwargs["system"] = system
-        if tools:
-            kwargs["tools"] = self._format_tools(tools)
+        def _create_stream() -> Generator[str | Message, None, Message]:
+            kwargs: dict[str, Any] = {
+                "model": self.model,
+                "max_tokens": self.max_tokens,
+                "messages": self._format_messages(messages),
+            }
+            if system:
+                kwargs["system"] = system
+            if tools:
+                kwargs["tools"] = self._format_tools(tools)
 
-        with self.client.messages.stream(**kwargs) as stream:
-            for text_chunk in stream.text_stream:
-                yield text_chunk
-            final_message = stream.get_final_message()
+            with self.client.messages.stream(**kwargs) as stream:
+                for text_chunk in stream.text_stream:
+                    yield text_chunk
+                final_message = stream.get_final_message()
 
-        parsed = self._parse_response(final_message)
-        yield parsed
-        return parsed
+            parsed = self._parse_response(final_message)
+            yield parsed
+            return parsed
+
+        return (yield from stream_with_retry(_create_stream, self.retry_config))

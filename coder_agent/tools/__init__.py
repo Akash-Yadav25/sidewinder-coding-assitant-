@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable
 
+from coder_agent.mcp.registry import MCPRegistry
 from coder_agent.tools import (
     delete_file,
+    edit_file,
+    git_diff,
     list_directory,
     read_file,
     run_command,
+    run_tests,
     search_code,
     write_file,
 )
@@ -32,16 +36,34 @@ class ToolRegistry:
 
         self._handlers: dict[str, Callable] = {
             "read_file": read_file.execute,
+            "edit_file": edit_file.execute,
             "write_file": write_file.execute,
             "delete_file": delete_file.execute,
             "list_directory": list_directory.execute,
             "search_code": search_code.execute,
             "run_command": run_command.execute,
+            "git_diff": git_diff.execute,
+            "run_tests": run_tests.execute,
         }
+
+        # Discover & register MCP tools if configured
+        try:
+            self.mcp = MCPRegistry(project_dir)
+            self._handlers.update(self.mcp.handlers)
+        except Exception:
+            self.mcp = None
 
     def get_definitions(self) -> list[ToolDefinition]:
         """Return provider-agnostic definitions for all registered tools."""
-        return list(TOOL_DEFINITIONS)
+        defs = list(TOOL_DEFINITIONS)
+        if self.mcp:
+            defs.extend(self.mcp.tool_definitions)
+        return defs
+
+    def shutdown(self) -> None:
+        """Cleanup any active background tool processes or MCP servers."""
+        if self.mcp:
+            self.mcp.shutdown()
 
     def execute(self, tool_call: ToolCall) -> ToolResult:
         """Dispatch a tool call to its respective handler."""

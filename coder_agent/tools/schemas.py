@@ -28,6 +28,28 @@ TOOL_DEFINITIONS: list[ToolDefinition] = [
         },
     ),
     ToolDefinition(
+        name="edit_file",
+        description="Make a targeted modification to an existing file by replacing old_text with new_text. old_text must match uniquely in the file (read file first to get exact context).",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative path to the file to edit",
+                },
+                "old_text": {
+                    "type": "string",
+                    "description": "Exact text chunk to replace in the file",
+                },
+                "new_text": {
+                    "type": "string",
+                    "description": "New replacement text chunk",
+                },
+            },
+            "required": ["path", "old_text", "new_text"],
+        },
+    ),
+    ToolDefinition(
         name="write_file",
         description="Create a new file or overwrite an existing file in the project directory. Creates parent directories if needed.",
         parameters={
@@ -114,6 +136,41 @@ TOOL_DEFINITIONS: list[ToolDefinition] = [
                 },
             },
             "required": ["command"],
+        },
+    ),
+    ToolDefinition(
+        name="git_diff",
+        description="View git diff of modified files in the repository to inspect your changes or verify repository status.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Optional specific file path to view diff for",
+                },
+                "staged": {
+                    "type": "boolean",
+                    "description": "Whether to view staged changes (default: false)",
+                },
+            },
+        },
+    ),
+    ToolDefinition(
+        name="run_tests",
+        description="Run targeted tests or full test suite with automatic framework detection and structured error diagnostics.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "targets": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of test files or test node names to run specifically (e.g. ['tests/test_auth.py'])",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in seconds (default: 90)",
+                },
+            },
         },
     ),
 ]
