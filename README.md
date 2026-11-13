@@ -31,41 +31,41 @@
 
 ```mermaid
 flowchart TD
-    subgraph UI_Layer ["CLI & Interactive Experience"]
-        CLI["CLI Entry (`coder-agent`)"]
-        REPL["Persistent REPL (`interactive.py`)"]
-        Signals["Signal Handler (`SIGINT` Trap)"]
-        SlashCmd["Slash Commands (`commands.py`)"]
+    subgraph UI_Layer ["CLI and Interactive Experience"]
+        CLI["CLI Entry (coder-agent)"]
+        REPL["Persistent REPL (interactive.py)"]
+        Signals["Signal Handler (SIGINT Trap)"]
+        SlashCmd["Slash Commands (commands.py)"]
     end
 
-    subgraph Core_Engine ["Orchestration & Intelligence Core"]
-        AgentCore["Agent Loop (`agent.py`)"]
-        SelfReview["Self-Review Engine (`agent.py`)"]
-        Compactor["Context Compactor & Budgeter (`compactor.py`)"]
-        RepoMapEngine["AST Symbol Indexer & RepoMap (`indexer/`)"]
-        HybridSearch["Hybrid Code Search (`indexer/search.py`)"]
+    subgraph Core_Engine ["Orchestration and Intelligence Core"]
+        AgentCore["Agent Loop (agent.py)"]
+        SelfReview["Self-Review Engine (agent.py)"]
+        Compactor["Context Compactor and Budgeter (compactor.py)"]
+        RepoMapEngine["AST Symbol Indexer and RepoMap (indexer/)"]
+        HybridSearch["Hybrid Code Search (indexer/search.py)"]
     end
 
-    subgraph Memory_Safety ["Persistence & Boundary Guard"]
-        SQLiteStore["SQLite Session Store (`storage/db.py`)"]
-        StoreModels["Storage Record Models (`storage/models.py`)"]
-        GitMgr["Git Checkpoint & Rollback Engine (`git.py`)"]
-        SafetyShield["Safety & Symlink Shield (`safety.py`)"]
-        SecretMasker["Secret Scanner & Redactor (`safety_secrets.py`)"]
+    subgraph Memory_Safety ["Persistence and Boundary Guard"]
+        SQLiteStore["SQLite Session Store (storage/db.py)"]
+        StoreModels["Storage Record Models (storage/models.py)"]
+        GitMgr["Git Checkpoint and Rollback Engine (git.py)"]
+        SafetyShield["Safety and Symlink Shield (safety.py)"]
+        SecretMasker["Secret Scanner and Redactor (safety_secrets.py)"]
     end
 
-    subgraph Tools_Subsystem ["Workspace Tools & MCP"]
-        ToolReg["Tool Registry (Dynamic + Parallel)"]
-        EditTool["`edit_file` (Search & Replace)"]
-        TestTool["`run_tests` (Targeted Diagnostician & Guarded)"]
-        GitTool["`git_diff` (Self-Inspection)"]
-        MCPClient["MCP Client over stdio (`mcp/`)"]
+    subgraph Tools_Subsystem ["Workspace Tools and MCP"]
+        ToolReg["Tool Registry (Dynamic and Parallel)"]
+        EditTool["edit_file (Search and Replace)"]
+        TestTool["run_tests (Targeted Diagnostician and Guarded)"]
+        GitTool["git_diff (Self-Inspection)"]
+        MCPClient["MCP Client over stdio (mcp/)"]
         AtomicTools["read_file / write_file / delete_file / run_command / search_code"]
     end
 
     subgraph Providers_Subsystem ["Resilient Multi-Provider LLMs"]
-        Resilience["Exponential Backoff & Jitter (`resilience.py`)"]
-        Cost["Token & Cost Calculator (`cost.py`)"]
+        Resilience["Exponential Backoff and Jitter (resilience.py)"]
+        Cost["Token and Cost Calculator (cost.py)"]
         Backends["Anthropic | Bedrock | Azure OpenAI | Ollama"]
     end
 
