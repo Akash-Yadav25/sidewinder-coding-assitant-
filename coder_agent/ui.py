@@ -189,6 +189,14 @@ class UI:
         print(f"\n{self.bold('Directory Structure:')}")
         print(tree_str)
 
+    def phase_banner(self, icon: str, phase: str, suffix: str = "") -> None:
+        """Display a visual phase separator."""
+        bar = "━" * 54
+        label = f"  {icon}  {self.bold(phase)}{suffix}"
+        print(f"\n{self.cyan(bar)}")
+        print(label)
+        print(f"{self.cyan(bar)}\n")
+
     def summary(self, result: AgentResult) -> None:
         """Display a structured summary of the completed task."""
         print()
@@ -222,6 +230,15 @@ class UI:
                 code = cmd.get("exit_code", 0)
                 code_str = self.green(f"exit {code}") if code == 0 else self.red(f"exit {code}")
                 print(f"  {self.cyan('$')} {cmd.get('command')} ({code_str})")
+
+        if result.replan_count > 0:
+            print(f"Replan Cycles:   {result.replan_count}")
+
+        if result.validation_checks:
+            print(f"Validation Checks: {len(result.validation_checks)}")
+            for chk in result.validation_checks:
+                marker = self.green("✓") if chk.passed else self.red("✗")
+                print(f"  {marker} [{chk.name}]")
 
         total_tok = result.total_tokens.input_tokens + result.total_tokens.output_tokens
         if total_tok > 0:

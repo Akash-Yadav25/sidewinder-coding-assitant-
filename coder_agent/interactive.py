@@ -22,6 +22,46 @@ if TYPE_CHECKING:
 
 
 
+def read_multiline_input(prompt_str: str, ui: UI) -> str:
+    """Always-on multi-line input accumulator.
+    
+    Rules:
+      - Slash commands (starting with '/') submit immediately on Enter.
+      - Empty first line returns empty string immediately.
+      - Regular requests buffer multiple lines:
+        * Blank line (Enter on empty line) submits accumulated buffer.
+        * Ctrl+D (EOF on continuation prompt) submits accumulated buffer.
+    """
+    continuation = ui.dim("... ") + "> "
+    lines: list[str] = []
+
+    try:
+        line = input(prompt_str)
+    except EOFError:
+        raise
+
+    stripped_line = line.strip()
+    if not stripped_line:
+        return ""
+
+    # Instant dispatch for slash commands
+    if stripped_line.startswith("/"):
+        return stripped_line
+
+    lines.append(line)
+
+    while True:
+        try:
+            next_line = input(continuation)
+        except EOFError:
+            break
+        if next_line == "":
+            break
+        lines.append(next_line)
+
+    return "\n".join(lines).strip()
+
+
 def start_interactive(
     config: Config,
     provider: LLMProvider,
@@ -33,13 +73,15 @@ def start_interactive(
     session_id: str | None = None,
 ) -> int:
     """Launch the interactive REPL loop with conversation continuity and signal trapping."""
+    title_str = f"Sidewinder Coding Assistant v{__version__}"
+    padding = " " * max(0, 54 - len(title_str))
     banner = f"""
 {ui.bold('┌────────────────────────────────────────────────────────┐')}
-{ui.bold('│')}  {ui.cyan('Coder Agent')} v{__version__} — AI Autonomous Coding CLI          {ui.bold('│')}
+{ui.bold('│')}  {ui.cyan('Sidewinder Coding Assistant')} v{__version__}{padding}{ui.bold('│')}
 {ui.bold('├────────────────────────────────────────────────────────┤')}
-{ui.bold('│')}  Provider:    {ui.green(provider.name.ljust(39))} {ui.bold('│')}
-{ui.bold('│')}  Project Dir: {ui.yellow(config.project_dir[:39].ljust(39))} {ui.bold('│')}
-{ui.bold('│')}  Approval:    {config.approval_mode.ljust(39)} {ui.bold('│')}
+{ui.bold('│')}  Provider:    {ui.green(provider.name.ljust(40))} {ui.bold('│')}
+{ui.bold('│')}  Project Dir: {ui.yellow(config.project_dir[:40].ljust(40))} {ui.bold('│')}
+{ui.bold('│')}  Approval:    {config.approval_mode.ljust(40)} {ui.bold('│')}
 {ui.bold('└────────────────────────────────────────────────────────┘')}
 Type a coding request, {ui.cyan('/help')} for commands, or {ui.cyan('/exit')} to quit.
 """
@@ -73,7 +115,7 @@ Type a coding request, {ui.cyan('/help')} for commands, or {ui.cyan('/exit')} to
             tokens_in_history = estimate_message_tokens(agent.messages)
             token_indicator = f" [{tokens_in_history:,} tok]" if tokens_in_history > 0 else ""
             prompt_str = f"{ui.bold(ui.cyan('coder-agent'))}{ui.dim(token_indicator)}> "
-            user_input = input(prompt_str).strip()
+            user_input = read_multiline_input(prompt_str, ui)
             interrupted_once = False
         except KeyboardInterrupt:
             if interrupted_once:

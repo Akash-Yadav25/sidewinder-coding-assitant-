@@ -154,3 +154,56 @@ def test_command_unhandled():
 
     res_natural = handler.handle("create a new file named test.py", TokenUsage(), None)
     assert not res_natural.handled  # natural language coding request
+
+
+def test_command_phase(capsys):
+    agent = MagicMock()
+    agent._last_phase_history = ["PLAN", "ACT-0", "VALIDATE-0"]
+    ui = UI(use_colors=False)
+    cfg = Config()
+    handler = SlashCommandHandler(agent, ui, cfg)
+
+    res = handler.handle("/phase", TokenUsage(), None)
+    assert res.handled
+    captured = capsys.readouterr()
+    assert "Last Task Phase Progression" in captured.out
+    assert "PLAN" in captured.out
+    assert "VALIDATE-0" in captured.out
+
+
+def test_command_plan(capsys):
+    agent = MagicMock()
+    agent._last_plan_text = "UNDERSTANDING: test plan"
+    ui = UI(use_colors=False)
+    cfg = Config()
+    handler = SlashCommandHandler(agent, ui, cfg)
+
+    res = handler.handle("/plan", TokenUsage(), None)
+    assert res.handled
+    captured = capsys.readouterr()
+    assert "Last Generated Structured Plan" in captured.out
+    assert "test plan" in captured.out
+
+
+def test_command_reasoning(capsys):
+    agent = MagicMock()
+    ui = UI(use_colors=False)
+    cfg = Config()
+    handler = SlashCommandHandler(agent, ui, cfg)
+
+    # 1. Inspect
+    res_inspect = handler.handle("/reasoning", TokenUsage(), None)
+    assert res_inspect.handled
+    captured = capsys.readouterr()
+    assert "Reasoning Mode:" in captured.out
+
+    # 2. Set valid mode
+    res_set = handler.handle("/reasoning always", TokenUsage(), None)
+    assert res_set.handled
+    assert cfg.reasoning_mode == "always"
+
+    # 3. Set invalid mode
+    res_invalid = handler.handle("/reasoning invalid_mode", TokenUsage(), None)
+    assert res_invalid.handled
+    captured_inv = capsys.readouterr()
+    assert "Invalid reasoning mode" in captured_inv.out

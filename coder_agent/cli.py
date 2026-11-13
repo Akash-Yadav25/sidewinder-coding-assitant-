@@ -22,7 +22,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments using standard argparse."""
     parser = argparse.ArgumentParser(
         prog="coder-agent",
-        description="Autonomous AI Coding Agent CLI — inspect codebases, implement changes, and verify with tests.",
+        description="Sidewinder Coding Assistant — autonomous AI coding CLI to inspect codebases, implement changes, and verify with tests.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -87,6 +87,17 @@ Examples:
         choices=["debug", "info", "warn", "error"],
         default="info",
         help="Logging verbosity written to stderr (default: info)",
+    )
+    parser.add_argument(
+        "--reasoning",
+        dest="reasoning_mode",
+        choices=["auto", "always", "never"],
+        help="Reasoning loop mode: auto (default), always, or never",
+    )
+    parser.add_argument(
+        "--max-replan-cycles",
+        type=int,
+        help="Maximum Plan->Act->Validate retry cycles (default: 3)",
     )
     parser.add_argument(
         "-v",

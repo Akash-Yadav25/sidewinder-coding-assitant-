@@ -64,6 +64,12 @@ class Config:
     max_context_files: int = 50
     log_level: str = "info"
 
+    # Reasoning loop configuration
+    max_replan_cycles: int = 3  # Max Plan->Act->Validate retry cycles
+    reasoning_mode: str = "auto"  # "auto" | "always" | "never"
+    complexity_threshold_words: int = 25  # Word count above which "auto" triggers PAV
+    max_tool_output_chars: int = 6000  # Truncate tool output beyond this
+
 
 def _load_dotenv_if_present(env_path: Path) -> None:
     """Simple stdlib parser for .env files without external dependencies."""
@@ -216,6 +222,32 @@ def load_config(cli_args: dict[str, Any] | None = None) -> Config:
         or "http://localhost:11434/v1"
     )
 
+    # 9. Reasoning loop settings
+    max_replan_cycles = int(
+        cli_args.get("max_replan_cycles")
+        or os.environ.get("CODER_AGENT_MAX_REPLAN_CYCLES")
+        or file_cfg.get("max_replan_cycles")
+        or 3
+    )
+    reasoning_mode = (
+        cli_args.get("reasoning_mode")
+        or os.environ.get("CODER_AGENT_REASONING_MODE")
+        or file_cfg.get("reasoning_mode")
+        or "auto"
+    ).lower()
+    complexity_threshold_words = int(
+        cli_args.get("complexity_threshold_words")
+        or os.environ.get("CODER_AGENT_COMPLEXITY_THRESHOLD_WORDS")
+        or file_cfg.get("complexity_threshold_words")
+        or 25
+    )
+    max_tool_output_chars = int(
+        cli_args.get("max_tool_output_chars")
+        or os.environ.get("CODER_AGENT_MAX_TOOL_OUTPUT_CHARS")
+        or file_cfg.get("max_tool_output_chars")
+        or 6000
+    )
+
     return Config(
         provider=provider,
         model=model,
@@ -236,4 +268,8 @@ def load_config(cli_args: dict[str, Any] | None = None) -> Config:
         max_file_size=max_file_size,
         max_context_files=max_context_files,
         log_level=log_level,
+        max_replan_cycles=max_replan_cycles,
+        reasoning_mode=reasoning_mode,
+        complexity_threshold_words=complexity_threshold_words,
+        max_tool_output_chars=max_tool_output_chars,
     )

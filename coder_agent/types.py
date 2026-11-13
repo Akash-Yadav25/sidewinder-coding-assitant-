@@ -3,7 +3,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
+
+
+class AgentPhase(str, Enum):
+    """Phases of the Plan->Act->Validate reasoning loop."""
+
+    PLAN = "PLAN"
+    ACT = "ACT"
+    VALIDATE = "VALIDATE"
+    DIAGNOSE = "DIAGNOSE"
+
+
+@dataclass
+class ValidationCheck:
+    """Result of a single validation check."""
+
+    name: str
+    passed: bool
+    output: str = ""
+    is_critical: bool = True
 
 
 @dataclass
@@ -70,3 +90,8 @@ class AgentResult:
     total_tokens: TokenUsage = field(default_factory=TokenUsage)
     checkpoint_id: str = ""
     total_cost: float = 0.0
+    plan_text: str = ""
+    validation_checks: list[ValidationCheck] = field(default_factory=list)
+    replan_count: int = 0
+    phase_history: list[str] = field(default_factory=list)
+    complexity: str = "simple"

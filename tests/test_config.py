@@ -82,3 +82,56 @@ class TestConfig:
         assert cfg.provider == "ollama"
         assert cfg.model == "llama3.3"
         assert cfg.max_iterations == 15
+
+    def test_reasoning_defaults(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("CODER_AGENT_REASONING_MODE", raising=False)
+        monkeypatch.delenv("CODER_AGENT_MAX_REPLAN_CYCLES", raising=False)
+        monkeypatch.delenv("CODER_AGENT_COMPLEXITY_THRESHOLD_WORDS", raising=False)
+        monkeypatch.delenv("CODER_AGENT_MAX_TOOL_OUTPUT_CHARS", raising=False)
+
+        cfg = load_config({})
+        assert cfg.reasoning_mode == "auto"
+        assert cfg.max_replan_cycles == 3
+        assert cfg.complexity_threshold_words == 25
+        assert cfg.max_tool_output_chars == 6000
+
+    def test_reasoning_env_vars(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("CODER_AGENT_REASONING_MODE", "always")
+        monkeypatch.setenv("CODER_AGENT_MAX_REPLAN_CYCLES", "5")
+        monkeypatch.setenv("CODER_AGENT_COMPLEXITY_THRESHOLD_WORDS", "30")
+        monkeypatch.setenv("CODER_AGENT_MAX_TOOL_OUTPUT_CHARS", "10000")
+
+        cfg = load_config({})
+        assert cfg.reasoning_mode == "always"
+        assert cfg.max_replan_cycles == 5
+        assert cfg.complexity_threshold_words == 30
+        assert cfg.max_tool_output_chars == 10000
+
+    def test_reasoning_cli_overrides(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("CODER_AGENT_REASONING_MODE", "always")
+        cli_args = {
+            "reasoning_mode": "never",
+            "max_replan_cycles": 2,
+        }
+        cfg = load_config(cli_args)
+        assert cfg.reasoning_mode == "never"
+        assert cfg.max_replan_cycles == 2
+
+    def test_reasoning_config_file(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        monkeypatch.chdir(tmp_path)
+        cfg_file = tmp_path / ".coder-agent.json"
+        cfg_file.write_text(
+            json.dumps(
+                {
+                    "reasoning_mode": "always",
+                    "max_replan_cycles": 4,
+                }
+            ),
+            encoding="utf-8",
+        )
+        cfg = load_config({})
+        assert cfg.reasoning_mode == "always"
+        assert cfg.max_replan_cycles == 4
