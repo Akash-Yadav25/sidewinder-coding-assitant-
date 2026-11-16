@@ -7,7 +7,7 @@
 ## Key Capabilities
 
 - **Plan → Act → Validate (PAV) Reasoning Loop**: Automatically switches on for complex tasks or architectural refactorings. Explicitly analyzes root cause and designs a structured `<plan>` before making changes, acts to implement, validates against both unit tests and actual program behavior, and enters a **Diagnose → Replan** cycle if checks fail.
-- **Always-On Multi-Line Input**: Paste full code blocks or multi-line instructions directly into the interactive REPL. Pressing Enter adds a line; a blank line (Enter on empty line) or `Ctrl+D` submits the accumulated buffer. Slash commands execute immediately on a single Enter.
+- **Antigravity-Style Interactive Text Box**: A modern, framed Unicode text box (`╭─`, `│`, `╰─`) with bracketed paste mode powered by `prompt_toolkit`. Paste full multi-line code blocks directly into the box without terminal clutter or premature execution on empty lines. Single Enter submits immediately; `Alt+Enter` (or `Esc+Enter` / `Ctrl+J`) inserts line breaks. Features floating autocomplete menus for all slash commands.
 - **Behavioral Verification Tool (`verify_output`)**: Solves the "tests pass but code is still wrong" pitfall by running commands and asserting expected stdout/stderr output and exit codes against real-world inputs.
 - **Automated Static Analysis Tool (`run_linter`)**: Auto-detects and executes the project's static analysis tool (`ruff`, `mypy`, `flake8`, `eslint`, `go vet`, `cargo clippy`) to catch type mismatches, syntax issues, and bugs before concluding.
 - **Context Output Truncation & Compaction**: Overly large tool outputs are automatically truncated to prevent context explosion, while older conversation history is synthesized into milestones at 70% capacity.
@@ -279,14 +279,14 @@ Tasks are defined in `evals/tasks/benchmark_tasks.py`:
 
 ## Automated Test Suite
 
-Run all 155 unit and integration tests:
+Run all 159 unit and integration tests:
 
 ```bash
 pytest tests/ -v
 ```
 
 ```text
-============================= 155 passed in 2.64s ==============================
+============================= 159 passed in 2.70s ==============================
 ```
 
 ---

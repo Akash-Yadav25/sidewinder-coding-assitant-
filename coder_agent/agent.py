@@ -36,6 +36,15 @@ _PLAN_INJECTION = """\
 ╔══════════════════════════════════════════════════════╗
 ║  PHASE: PLAN                                         ║
 ╚══════════════════════════════════════════════════════╝
+
+- This phase is strictly read-only.
+- Identify all affected modules and trace their dependencies.
+- Inspect existing implementations and related tests.
+- Identify potential regressions and backward compatibility concerns.
+- Break complex requirements into independently verifiable steps.
+- Explicitly list assumptions and unresolved questions.
+- Do not implement anything.
+
 Before making any changes, analyze the task and produce a structured plan.
 Use read_file, list_directory, search_code freely to explore the codebase.
 Output your plan in this format:
@@ -58,6 +67,15 @@ _ACT_INJECTION = """\
 ╔══════════════════════════════════════════════════════╗
 ║  PHASE: ACT                                          ║
 ╚══════════════════════════════════════════════════════╝
+
+- Follow the approved implementation plan.
+- Track completed and pending implementation steps.
+- Implement the complete requested functionality.
+- Reassess dependencies when new information is discovered.
+- Do not silently skip requirements.
+- Update the implementation plan when a significant change becomes necessary.
+- Run targeted sanity checks during development.
+
 Execute your plan. Make all necessary code changes using edit_file / write_file.
 You may run quick sanity checks (run_command, run_tests) during implementation
 if it helps you, but comprehensive validation will occur in the next phase.
@@ -68,6 +86,15 @@ _VALIDATE_INJECTION = """\
 ╔══════════════════════════════════════════════════════╗
 ║  PHASE: VALIDATE                                     ║
 ╚══════════════════════════════════════════════════════╝
+
+- This phase is strictly read-only.
+- Execute verification commands; do not assume results.
+- Report actual tool execution results and exit codes.
+- Distinguish PASS, FAIL, and NOT RUN.
+- Verify all explicitly requested requirements.
+- Never claim success without supporting execution evidence.
+- Do not modify code to resolve failures.
+
 Thoroughly validate your changes. Do NOT modify any files in this phase.
 Run these checks in order and report each as PASS or FAIL:
 
@@ -91,6 +118,14 @@ _DIAGNOSE_INJECTION = """\
 ╔══════════════════════════════════════════════════════╗
 ║  PHASE: DIAGNOSE -> REPLAN                           ║
 ╚══════════════════════════════════════════════════════╝
+
+- This phase is strictly read-only.
+- Analyze actual validation failures.
+- Distinguish implementation defects from pre-existing issues.
+- Identify root causes instead of treating symptoms.
+- Revise only the affected implementation steps.
+- Do not modify files; leave implementation to ACT.
+
 One or more validation checks FAILED. Do not give up — analyze and replan.
 
 1. DIAGNOSIS: What specifically went wrong? Why did the previous approach fail?
