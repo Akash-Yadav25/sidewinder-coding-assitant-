@@ -3,8 +3,10 @@
 from unittest.mock import MagicMock, patch
 import pytest
 
-from coder_agent.interactive import read_multiline_input
+from coder_agent.interactive import InteractiveInputSession, read_multiline_input
 from coder_agent.ui import UI
+from prompt_toolkit.completion import CompleteEvent
+from prompt_toolkit.document import Document
 
 
 @pytest.fixture
@@ -53,3 +55,44 @@ def test_read_multiline_slash_command_with_args(mock_ui):
     with patch("builtins.input", side_effect=["/commit initial setup"]):
         result = read_multiline_input("prompt> ", mock_ui)
         assert result == "/commit initial setup"
+
+
+def test_input_session_slash_commands_catalog(mock_ui):
+    session = InteractiveInputSession(mock_ui)
+    commands = session.SLASH_COMMANDS
+    expected = [
+        "/help", "/diff", "/undo", "/commit", "/compact", "/cost",
+        "/model", "/phase", "/plan", "/reasoning", "/history",
+        "/reset", "/config", "/clear", "/exit", "/quit",
+    ]
+    for cmd in expected:
+        assert cmd in commands
+        assert len(commands[cmd]) > 0
+
+
+def test_input_session_completer(mock_ui):
+    session = InteractiveInputSession(mock_ui)
+    doc = Document("/di", cursor_position=3)
+    completions = list(session.completer.get_completions(doc, CompleteEvent()))
+    texts = [c.text for c in completions]
+    assert "/diff" in texts
+
+
+def test_input_session_keybindings_configured(mock_ui):
+    session = InteractiveInputSession(mock_ui)
+    kb = session._kb
+    # Should have bindings registered
+    bindings = kb.bindings
+    assert len(bindings) >= 2
+
+
+def test_input_session_tty_prompt_flow(mock_ui, monkeypatch):
+    import sys
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    session = InteractiveInputSession(mock_ui)
+    monkeypatch.setattr(session.session, "prompt", lambda *args, **kwargs: "Write unit tests for parser")
+
+    result = session.prompt(token_count=1200)
+    assert result == "Write unit tests for parser"
+
