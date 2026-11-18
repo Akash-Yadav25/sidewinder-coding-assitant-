@@ -79,6 +79,13 @@ def test_input_session_completer(mock_ui):
 
 
 def test_input_session_keybindings_configured(mock_ui):
+    import prompt_toolkit.input.ansi_escape_sequences as aes
+    from prompt_toolkit.keys import Keys
+
+    # Verify Shift+Enter sequences are mapped to ControlJ
+    assert aes.ANSI_SEQUENCES["\x1b[13;2u"] == Keys.ControlJ
+    assert aes.ANSI_SEQUENCES["\x1b[27;2;13~"] == Keys.ControlJ
+
     session = InteractiveInputSession(mock_ui)
     kb = session._kb
     # Should have bindings registered

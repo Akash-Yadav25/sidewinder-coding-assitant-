@@ -7,11 +7,21 @@ import shutil
 import sys
 from typing import TYPE_CHECKING
 
+import prompt_toolkit.input.ansi_escape_sequences as aes
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.shortcuts import PromptSession
+
+# Map modern terminal Shift+Enter escape sequences to Keys.ControlJ:
+# 1. Kitty keyboard protocol: \x1b[13;2u (13 = Enter, 2 = Shift)
+# 2. Xterm modifyOtherKeys / iTerm2 / VS Code: \x1b[27;2;13~
+# 3. CSI modifier variations: \x1b[13;2~
+aes.ANSI_SEQUENCES["\x1b[13;2u"] = Keys.ControlJ
+aes.ANSI_SEQUENCES["\x1b[27;2;13~"] = Keys.ControlJ
+aes.ANSI_SEQUENCES["\x1b[13;2~"] = Keys.ControlJ
 
 from coder_agent import __version__
 from coder_agent.agent import Agent
@@ -76,10 +86,10 @@ class InteractiveInputSession:
             """Enter submits the input buffer."""
             event.current_buffer.validate_and_handle()
 
-        @kb.add("escape", "enter")
         @kb.add("c-j")
+        @kb.add("escape", "enter")
         def _(event):
-            """Alt+Enter, Esc+Enter, or Ctrl+J inserts a newline."""
+            """Shift+Enter (mapped via ControlJ or terminal escape sequences), Alt+Enter, or Esc+Enter inserts a newline."""
             event.current_buffer.insert_text("\n")
 
         return kb
@@ -131,7 +141,7 @@ class InteractiveInputSession:
         bottom_bar = HTML(
             f"<ansibrightblack>╰{bottom_dashes}╯</ansibrightblack>\n"
             " <ansidim><b>[Enter]</b> Send   "
-            "<b>[Alt+Enter]</b> Line Break   "
+            "<b>[Shift+Enter]</b> Line Break   "
             "<b>[/]</b> Commands   "
             "<b>[Ctrl+C]</b> Cancel</ansidim>"
         )
